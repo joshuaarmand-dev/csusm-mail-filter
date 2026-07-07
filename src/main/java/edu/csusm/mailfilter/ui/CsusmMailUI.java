@@ -3,21 +3,11 @@ package edu.csusm.mailfilter.ui;
 import edu.csusm.mailfilter.model.Analysis;
 import edu.csusm.mailfilter.model.Msg;
 import edu.csusm.mailfilter.service.EmailAnalyzer;
+import edu.csusm.mailfilter.service.GmailService;
 import edu.csusm.mailfilter.service.LinkScanner;
 import edu.csusm.mailfilter.store.CompaniesStore;
 import edu.csusm.mailfilter.util.EmailUtils;
 
-import com.google.api.client.extensions.java6.auth.oauth2.AuthorizationCodeInstalledApp;
-import com.google.api.client.extensions.jetty.auth.oauth2.LocalServerReceiver;
-import com.google.api.client.googleapis.auth.oauth2.GoogleAuthorizationCodeFlow;
-import com.google.api.client.googleapis.auth.oauth2.GoogleClientSecrets;
-import com.google.api.client.googleapis.javanet.GoogleNetHttpTransport;
-import com.google.api.client.json.JsonFactory;
-import com.google.api.client.json.gson.GsonFactory;
-import com.google.api.client.util.store.FileDataStoreFactory;
-import com.google.api.services.gmail.Gmail;
-import com.google.api.services.gmail.GmailScopes;
-import com.google.api.services.gmail.model.ListMessagesResponse;
 import com.google.api.services.gmail.model.Message;
 
 import javax.swing.JButton;
@@ -45,36 +35,18 @@ import java.awt.Desktop;
 import java.awt.FlowLayout;
 import java.awt.event.ActionEvent;
 
-import java.io.File;
-import java.io.FileNotFoundException;
 import java.io.IOException;
-import java.io.InputStream;
-import java.io.InputStreamReader;
 
 import java.net.URI;
 
 import java.nio.file.Path;
 
-import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 
 public class CsusmMailUI extends JFrame {
 
-    private static final String APPLICATION_NAME = "CSUSM Mail Filter (Gmail)";
-    private static final JsonFactory JSON_FACTORY = GsonFactory.getDefaultInstance();
-
-    private static final Path TOKENS_DIR_PATH =
-            Path.of(System.getProperty("user.home"), ".csusm-filter", "tokens");
-
     private static final Path STORE_PATH =
             Path.of(System.getProperty("user.home"), ".csusm-filter", "companies.json");
-
-    private static final List<String> SCOPES =
-            List.of(GmailScopes.GMAIL_READONLY, GmailScopes.GMAIL_MODIFY);
-
-    private Gmail gmail;
-    private final Object gmailLock = new Object();
 
     private final JTable tblFiltered = new JTable();
     private final JTable tblUnfiltered = new JTable();
@@ -98,6 +70,7 @@ public class CsusmMailUI extends JFrame {
 
     private CompaniesStore store;
 
+    private final GmailService gmailService = new GmailService();
     private final EmailAnalyzer emailAnalyzer = new EmailAnalyzer(new LinkScanner());
 
     private final JTabbedPane tabs = new JTabbedPane();
@@ -189,50 +162,29 @@ public class CsusmMailUI extends JFrame {
         new SwingWorker<Analysis, Void>() {
             @Override
             protected Analysis doInBackground() throws Exception {
-                Gmail g = ensureGmail();
-
                 statusBG("Fetching " + top + " messages…");
 
-                ListMessagesResponse resp = g.users()
-                        .messages()
-                        .list("me")
-                        .setLabelIds(Collections.singletonList("INBOX"))
-                        .setMaxResults((long) top)
-                        .execute();
-
-                List<Message> msgs = new ArrayList<>();
-
-                if (resp.getMessages() != null) {
-                    for (Message m : resp.getMessages()) {
-                        Message full = g.users()
-                                .messages()
-                                .get("me", m.getId())
-                                .setFormat("full")
-                                .execute();
-
-                        msgs.add(full);
-                    }
-                }
+                List<Message> messages = gmailService.fetchRecentInboxMessages(top);
 
                 statusBG("Scanning for domains and link safety…");
 
-                return emailAnalyzer.analyzeMessages(msgs, store);
+                return emailAnalyzer.analyzeMessages(messages, store);
             }
 
             @Override
             protected void done() {
                 try {
-                    Analysis a = get();
+                    Analysis analysis = get();
 
-                    modelFiltered.set(a.filtered);
-                    modelUnfiltered.set(a.unfiltered);
-                    modelUnsafe.set(a.unsafe);
+                    modelFiltered.set(analysis.filtered);
+                    modelUnfiltered.set(analysis.unfiltered);
+                    modelUnsafe.set(analysis.unsafe);
 
                     status(String.format(
                             "Scan complete — Filtered: %d | Unfiltered: %d | Unsafe: %d",
-                            a.filtered.size(),
-                            a.unfiltered.size(),
-                            a.unsafe.size()
+                            analysis.filtered.size(),
+                            analysis.unfiltered.size(),
+                            analysis.unsafe.size()
                     ));
                 } catch (Exception ex) {
                     ex.printStackTrace();
@@ -242,49 +194,6 @@ public class CsusmMailUI extends JFrame {
                 }
             }
         }.execute();
-    }
-
-    private Gmail ensureGmail() throws Exception {
-        synchronized (gmailLock) {
-            if (gmail != null) {
-                return gmail;
-            }
-
-            InputStream in = getClass().getResourceAsStream("/credentials.json");
-
-            if (in == null) {
-                throw new FileNotFoundException("credentials.json not found in resources");
-            }
-
-            GoogleClientSecrets clientSecrets =
-                    GoogleClientSecrets.load(JSON_FACTORY, new InputStreamReader(in));
-
-            var httpTransport = GoogleNetHttpTransport.newTrustedTransport();
-
-            File tokenDir = TOKENS_DIR_PATH.toFile();
-
-            GoogleAuthorizationCodeFlow flow = new GoogleAuthorizationCodeFlow.Builder(
-                    httpTransport,
-                    JSON_FACTORY,
-                    clientSecrets,
-                    SCOPES
-            )
-                    .setDataStoreFactory(new FileDataStoreFactory(tokenDir))
-                    .setAccessType("offline")
-                    .build();
-
-            LocalServerReceiver receiver =
-                    new LocalServerReceiver.Builder().setPort(8888).build();
-
-            var credential = new AuthorizationCodeInstalledApp(flow, receiver)
-                    .authorize("user");
-
-            gmail = new Gmail.Builder(httpTransport, JSON_FACTORY, credential)
-                    .setApplicationName(APPLICATION_NAME)
-                    .build();
-
-            return gmail;
-        }
     }
 
     private void allowSelectedDomain() {
