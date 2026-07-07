@@ -1,4 +1,9 @@
-package edu.csusm.mailfilter;
+package edu.csusm.mailfilter.ui;
+
+import edu.csusm.mailfilter.model.Analysis;
+import edu.csusm.mailfilter.model.LinkScanResult;
+import edu.csusm.mailfilter.model.Msg;
+import edu.csusm.mailfilter.store.CompaniesStore;
 
 import com.google.api.client.extensions.java6.auth.oauth2.AuthorizationCodeInstalledApp;
 import com.google.api.client.extensions.jetty.auth.oauth2.LocalServerReceiver;
@@ -19,11 +24,23 @@ import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
 
-import com.google.gson.Gson;
-import com.google.gson.GsonBuilder;
-
-import javax.swing.*;
-import javax.swing.table.AbstractTableModel;
+import javax.swing.JButton;
+import javax.swing.JFrame;
+import javax.swing.JLabel;
+import javax.swing.JOptionPane;
+import javax.swing.JPanel;
+import javax.swing.JScrollPane;
+import javax.swing.JSpinner;
+import javax.swing.JTable;
+import javax.swing.JTabbedPane;
+import javax.swing.ListSelectionModel;
+import javax.swing.RowSorter;
+import javax.swing.SortOrder;
+import javax.swing.SpinnerNumberModel;
+import javax.swing.SwingUtilities;
+import javax.swing.SwingWorker;
+import javax.swing.UIManager;
+import javax.swing.WindowConstants;
 import javax.swing.table.TableRowSorter;
 
 import java.awt.BorderLayout;
@@ -37,15 +54,12 @@ import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
-import java.io.Reader;
-import java.io.Writer;
 
 import java.net.IDN;
 import java.net.URI;
 import java.net.URLDecoder;
 
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 
 import java.time.Instant;
@@ -57,10 +71,8 @@ import java.util.Base64;
 import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
-import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
-import java.util.TreeSet;
 
 public class CsusmMailUI extends JFrame {
 
@@ -69,10 +81,10 @@ public class CsusmMailUI extends JFrame {
 
     private static final Path TOKENS_DIR_PATH =
             Path.of(System.getProperty("user.home"), ".csusm-filter", "tokens");
+
     private static final Path STORE_PATH =
             Path.of(System.getProperty("user.home"), ".csusm-filter", "companies.json");
 
-    // Scopes: read + modify (so we COULD label later if we want)
     private static final List<String> SCOPES =
             List.of(GmailScopes.GMAIL_READONLY, GmailScopes.GMAIL_MODIFY);
 
@@ -89,7 +101,6 @@ public class CsusmMailUI extends JFrame {
 
     private static final DateTimeFormatter WHEN =
             DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm").withZone(ZoneId.systemDefault());
-    private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
 
     private Gmail gmail;
     private final Object gmailLock = new Object();
@@ -97,7 +108,9 @@ public class CsusmMailUI extends JFrame {
     private final JTable tblFiltered = new JTable();
     private final JTable tblUnfiltered = new JTable();
     private final JTable tblUnsafe = new JTable();
+
     private final JLabel status = new JLabel("Ready");
+
     private final JSpinner spTop =
             new JSpinner(new SpinnerNumberModel(100, 25, 1000, 25));
 
@@ -125,6 +138,7 @@ public class CsusmMailUI extends JFrame {
 
     public CsusmMailUI() {
         super("CSUSM Mail Filter — Gmail Edition");
+
         setDefaultCloseOperation(WindowConstants.EXIT_ON_CLOSE);
         setSize(1100, 700);
         setLocationRelativeTo(null);
@@ -175,15 +189,15 @@ public class CsusmMailUI extends JFrame {
         SwingUtilities.invokeLater(() -> btnScan.doClick());
     }
 
-    // ---------- UI helpers ----------
-
     private void setupTable(JTable table, MailTableModel model) {
         table.setModel(model);
         table.setAutoCreateRowSorter(true);
         table.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
 
         @SuppressWarnings("unchecked")
-        var sorter = (TableRowSorter<MailTableModel>) table.getRowSorter();
+        TableRowSorter<MailTableModel> sorter =
+                (TableRowSorter<MailTableModel>) table.getRowSorter();
+
         sorter.setSortKeys(List.of(new RowSorter.SortKey(2, SortOrder.DESCENDING)));
 
         table.setAutoResizeMode(JTable.AUTO_RESIZE_LAST_COLUMN);
@@ -195,6 +209,7 @@ public class CsusmMailUI extends JFrame {
 
     private void doScan(ActionEvent ev) {
         int top = (Integer) spTop.getValue();
+
         disableControls(true);
         status("Authenticating…");
 
@@ -202,6 +217,7 @@ public class CsusmMailUI extends JFrame {
             @Override
             protected Analysis doInBackground() throws Exception {
                 Gmail g = ensureGmail();
+
                 statusBG("Fetching " + top + " messages…");
 
                 ListMessagesResponse resp = g.users()
@@ -212,17 +228,21 @@ public class CsusmMailUI extends JFrame {
                         .execute();
 
                 List<Message> msgs = new ArrayList<>();
+
                 if (resp.getMessages() != null) {
                     for (Message m : resp.getMessages()) {
-                        Message full = g.users().messages()
+                        Message full = g.users()
+                                .messages()
                                 .get("me", m.getId())
                                 .setFormat("full")
                                 .execute();
+
                         msgs.add(full);
                     }
                 }
 
                 statusBG("Scanning for domains and link safety…");
+
                 return analyzeMessages(msgs, store);
             }
 
@@ -230,13 +250,16 @@ public class CsusmMailUI extends JFrame {
             protected void done() {
                 try {
                     Analysis a = get();
+
                     modelFiltered.set(a.filtered);
                     modelUnfiltered.set(a.unfiltered);
                     modelUnsafe.set(a.unsafe);
 
                     status(String.format(
                             "Scan complete — Filtered: %d | Unfiltered: %d | Unsafe: %d",
-                            a.filtered.size(), a.unfiltered.size(), a.unsafe.size()
+                            a.filtered.size(),
+                            a.unfiltered.size(),
+                            a.unsafe.size()
                     ));
                 } catch (Exception ex) {
                     ex.printStackTrace();
@@ -248,13 +271,14 @@ public class CsusmMailUI extends JFrame {
         }.execute();
     }
 
-    // ---------- Gmail auth ----------
-
     private Gmail ensureGmail() throws Exception {
         synchronized (gmailLock) {
-            if (gmail != null) return gmail;
+            if (gmail != null) {
+                return gmail;
+            }
 
             InputStream in = getClass().getResourceAsStream("/credentials.json");
+
             if (in == null) {
                 throw new FileNotFoundException("credentials.json not found in resources");
             }
@@ -263,9 +287,15 @@ public class CsusmMailUI extends JFrame {
                     GoogleClientSecrets.load(JSON_FACTORY, new InputStreamReader(in));
 
             var httpTransport = GoogleNetHttpTransport.newTrustedTransport();
+
             File tokenDir = TOKENS_DIR_PATH.toFile();
+
             GoogleAuthorizationCodeFlow flow = new GoogleAuthorizationCodeFlow.Builder(
-                    httpTransport, JSON_FACTORY, clientSecrets, SCOPES)
+                    httpTransport,
+                    JSON_FACTORY,
+                    clientSecrets,
+                    SCOPES
+            )
                     .setDataStoreFactory(new FileDataStoreFactory(tokenDir))
                     .setAccessType("offline")
                     .build();
@@ -284,8 +314,6 @@ public class CsusmMailUI extends JFrame {
         }
     }
 
-    // ---------- Message analysis ----------
-
     private Analysis analyzeMessages(List<Message> msgs, CompaniesStore store) {
         Analysis out = new Analysis();
 
@@ -302,14 +330,19 @@ public class CsusmMailUI extends JFrame {
                                 : List.of();
 
                 for (MessagePartHeader h : headers) {
-                    String name = (h.getName() == null ? "" : h.getName()).toLowerCase(Locale.ROOT);
+                    String name = (h.getName() == null ? "" : h.getName())
+                            .toLowerCase(Locale.ROOT);
+
                     switch (name) {
                         case "subject" -> subj = h.getValue();
                         case "from" -> fromHeader = h.getValue();
+                        default -> {
+                        }
                     }
                 }
 
                 Long internalDate = m.getInternalDate();
+
                 if (internalDate != null) {
                     whenTxt = WHEN.format(Instant.ofEpochMilli(internalDate));
                 }
@@ -323,38 +356,48 @@ public class CsusmMailUI extends JFrame {
             Msg row = new Msg(id, subj, email, whenTxt, link);
 
             boolean fromSchool = isCsusm(email);
-            String sdom = senderDomain(email);
-            boolean fromAllowed = store.isAllowed(sdom);
-            boolean fromBlocked = store.isBlocked(sdom);
+            String senderDomain = senderDomain(email);
+            boolean fromAllowed = store.isAllowed(senderDomain);
+            boolean fromBlocked = store.isBlocked(senderDomain);
 
             boolean unsafe = false;
             List<String> reasons = new ArrayList<>();
 
             if (fromBlocked) {
                 unsafe = true;
-                reasons.add("Sender in block list: " + sdom);
+                reasons.add("Sender in block list: " + senderDomain);
             }
 
-            LinkScanResult r = scanLinks(body, store);
-            if (r.suspicious) {
+            LinkScanResult result = scanLinks(body, store);
+
+            if (result.suspicious) {
                 unsafe = true;
-                reasons.addAll(r.reasons);
+                reasons.addAll(result.reasons);
             }
 
-            row.classFiltered = (fromSchool || fromAllowed);
+            row.classFiltered = fromSchool || fromAllowed;
             row.classUnsafe = unsafe;
             row.reasons = reasons;
 
-            if (row.classFiltered) out.filtered.add(row);
-            else out.unfiltered.add(row);
-            if (row.classUnsafe) out.unsafe.add(row);
+            if (row.classFiltered) {
+                out.filtered.add(row);
+            } else {
+                out.unfiltered.add(row);
+            }
+
+            if (row.classUnsafe) {
+                out.unsafe.add(row);
+            }
         }
 
         return out;
     }
 
     private static String extractBody(Message msg) {
-        if (msg.getPayload() == null) return "";
+        if (msg.getPayload() == null) {
+            return "";
+        }
+
         return extractBodyFromPart(msg.getPayload());
     }
 
@@ -363,22 +406,32 @@ public class CsusmMailUI extends JFrame {
             byte[] data = Base64.getUrlDecoder().decode(part.getBody().getData());
             return new String(data, StandardCharsets.UTF_8);
         }
+
         if (part.getParts() != null) {
             for (MessagePart p : part.getParts()) {
                 String text = extractBodyFromPart(p);
-                if (!text.isEmpty()) return text;
+
+                if (!text.isEmpty()) {
+                    return text;
+                }
             }
         }
+
         return "";
     }
 
     private static String extractEmail(String fromHeader) {
-        if (fromHeader == null) return "";
+        if (fromHeader == null) {
+            return "";
+        }
+
         int lt = fromHeader.indexOf('<');
         int gt = fromHeader.indexOf('>');
+
         String candidate = (lt >= 0 && gt > lt)
                 ? fromHeader.substring(lt + 1, gt)
                 : fromHeader;
+
         return candidate.trim();
     }
 
@@ -388,15 +441,24 @@ public class CsusmMailUI extends JFrame {
     }
 
     private static String senderDomain(String email) {
-        if (email == null) return "";
+        if (email == null) {
+            return "";
+        }
+
         int at = email.indexOf('@');
-        return at > 0 ? email.substring(at + 1).toLowerCase(Locale.ROOT) : "";
+
+        return at > 0
+                ? email.substring(at + 1).toLowerCase(Locale.ROOT)
+                : "";
     }
 
     private static LinkScanResult scanLinks(String content, CompaniesStore store) {
         boolean suspicious = false;
         List<String> reasons = new ArrayList<>();
-        if (content == null || content.isBlank()) return new LinkScanResult(false, reasons);
+
+        if (content == null || content.isBlank()) {
+            return new LinkScanResult(false, reasons);
+        }
 
         Document doc = Jsoup.parse(content);
 
@@ -404,7 +466,10 @@ public class CsusmMailUI extends JFrame {
             String href = a.attr("href");
             String actual = unwindSafeLinks(href);
             URI uri = safeUri(actual);
-            if (uri == null || uri.getHost() == null) continue;
+
+            if (uri == null || uri.getHost() == null) {
+                continue;
+            }
 
             String host = uri.getHost().toLowerCase(Locale.ROOT);
 
@@ -419,6 +484,7 @@ public class CsusmMailUI extends JFrame {
             }
 
             String tld = lastLabel(host);
+
             if (RISKY_TLDS.contains(tld)) {
                 suspicious = true;
                 reasons.add("Risky TLD: ." + tld);
@@ -435,77 +501,108 @@ public class CsusmMailUI extends JFrame {
 
     private static String unwindSafeLinks(String href) {
         try {
-            URI u = new URI(href);
-            String q = Optional.ofNullable(u.getRawQuery()).orElse("");
-            for (String part : q.split("&")) {
+            URI uri = new URI(href);
+            String query = Optional.ofNullable(uri.getRawQuery()).orElse("");
+
+            for (String part : query.split("&")) {
                 int eq = part.indexOf('=');
+
                 if (eq > 0 && part.substring(0, eq).equalsIgnoreCase("url")) {
                     return URLDecoder.decode(part.substring(eq + 1), StandardCharsets.UTF_8);
                 }
             }
         } catch (Exception ignored) {
         }
+
         return href;
     }
 
     private static boolean matchesAny(String host, Set<String> bases) {
-        for (String b : bases) {
-            if (host.equals(b) || host.endsWith("." + b)) return true;
+        for (String base : bases) {
+            if (host.equals(base) || host.endsWith("." + base)) {
+                return true;
+            }
         }
+
         return false;
     }
 
     private static String lastLabel(String host) {
         int dot = host.lastIndexOf('.');
-        return dot >= 0 ? host.substring(dot + 1) : host;
+
+        return dot >= 0
+                ? host.substring(dot + 1)
+                : host;
     }
 
-    private static URI safeUri(String s) {
+    private static URI safeUri(String value) {
         try {
-            return URI.create(s);
+            return URI.create(value);
         } catch (Exception e) {
             return null;
         }
     }
 
-    // ---------- Allow/block + UI actions ----------
-
     private void allowSelectedDomain() {
-        Msg m = anySelected();
-        if (m == null) return;
-        String dom = senderDomain(m.from);
-        if (dom.isBlank()) {
+        Msg msg = anySelected();
+
+        if (msg == null) {
+            return;
+        }
+
+        String domain = senderDomain(msg.from);
+
+        if (domain.isBlank()) {
             info("No sender domain found.");
             return;
         }
-        if (store.allow.add(dom)) saveStore();
-        info("Allowed: " + dom + ". Rescan to apply.");
+
+        if (store.addAllowed(domain)) {
+            saveStore();
+        }
+
+        info("Allowed: " + domain + ". Rescan to apply.");
     }
 
     private void blockSelectedDomain() {
-        Msg m = anySelected();
-        if (m == null) return;
-        String dom = senderDomain(m.from);
-        if (dom.isBlank()) {
+        Msg msg = anySelected();
+
+        if (msg == null) {
+            return;
+        }
+
+        String domain = senderDomain(msg.from);
+
+        if (domain.isBlank()) {
             info("No sender domain found.");
             return;
         }
-        if (store.block.add(dom)) saveStore();
-        info("Blocked: " + dom + ". Rescan to apply.");
+
+        if (store.addBlocked(domain)) {
+            saveStore();
+        }
+
+        info("Blocked: " + domain + ". Rescan to apply.");
     }
 
     private void removeSelectedFrom(String list) {
-        Msg m = anySelected();
-        if (m == null) return;
-        String dom = senderDomain(m.from);
+        Msg msg = anySelected();
+
+        if (msg == null) {
+            return;
+        }
+
+        String domain = senderDomain(msg.from);
+
         boolean changed = "allow".equals(list)
-                ? store.allow.remove(dom)
-                : store.block.remove(dom);
+                ? store.removeAllowed(domain)
+                : store.removeBlocked(domain);
+
         if (changed) {
             saveStore();
-            info("Removed " + dom + " from " + list + ".");
+            info("Removed " + domain + " from " + list + ".");
         } else {
-            info(dom + " not in " + list + " list.");
+            info(domain + " not in " + list + " list.");
         }
     }
 
@@ -518,14 +615,17 @@ public class CsusmMailUI extends JFrame {
     }
 
     private Msg anySelected() {
-        JTable t = currentTable();
-        int row = t.getSelectedRow();
+        JTable table = currentTable();
+        int row = table.getSelectedRow();
+
         if (row < 0) {
             info("Select a message first.");
             return null;
         }
-        int modelRow = t.convertRowIndexToModel(row);
-        return ((MailTableModel) t.getModel()).rows.get(modelRow);
+
+        int modelRow = table.convertRowIndexToModel(row);
+
+        return ((MailTableModel) table.getModel()).getMsgAt(modelRow);
     }
 
     private JTable currentTable() {
@@ -534,10 +634,14 @@ public class CsusmMailUI extends JFrame {
     }
 
     private void openSelected() {
-        Msg m = anySelected();
-        if (m == null) return;
+        Msg msg = anySelected();
+
+        if (msg == null) {
+            return;
+        }
+
         try {
-            Desktop.getDesktop().browse(URI.create(m.webLink));
+            Desktop.getDesktop().browse(URI.create(msg.webLink));
         } catch (Exception ex) {
             error("Open failed: " + ex.getMessage());
         }
@@ -551,165 +655,42 @@ public class CsusmMailUI extends JFrame {
         btnRemoveAllow.setEnabled(!busy);
         btnRemoveBlock.setEnabled(!busy);
         spTop.setEnabled(!busy);
+
         setCursor(Cursor.getPredefinedCursor(
-                busy ? Cursor.WAIT_CURSOR : Cursor.DEFAULT_CURSOR));
+                busy ? Cursor.WAIT_CURSOR : Cursor.DEFAULT_CURSOR
+        ));
     }
 
-    private void status(String s) {
-        status.setText(s);
+    private void status(String message) {
+        status.setText(message);
     }
 
-    private void statusBG(String s) {
-        SwingUtilities.invokeLater(() -> status.setText(s));
+    private void statusBG(String message) {
+        SwingUtilities.invokeLater(() -> status.setText(message));
     }
 
-    private void info(String s) {
-        JOptionPane.showMessageDialog(this, s,
-                "Info", JOptionPane.INFORMATION_MESSAGE);
+    private void info(String message) {
+        JOptionPane.showMessageDialog(
+                this,
+                message,
+                "Info",
+                JOptionPane.INFORMATION_MESSAGE
+        );
     }
 
-    private void error(String s) {
-        JOptionPane.showMessageDialog(this, s,
-                "Error", JOptionPane.ERROR_MESSAGE);
+    private void error(String message) {
+        JOptionPane.showMessageDialog(
+                this,
+                message,
+                "Error",
+                JOptionPane.ERROR_MESSAGE
+        );
     }
 
     private static void setSystemLAF() {
         try {
             UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName());
         } catch (Exception ignored) {
-        }
-    }
-
-    // ---------- Data classes ----------
-
-    private static class Msg {
-        final String id;
-        final String subject;
-        final String from;
-        final String received;
-        final String webLink;
-        List<String> reasons = List.of();
-        boolean classFiltered;
-        boolean classUnsafe;
-
-        Msg(String id, String subject, String from, String received, String webLink) {
-            this.id = id;
-            this.subject = subject;
-            this.from = from;
-            this.received = received;
-            this.webLink = webLink;
-        }
-    }
-
-    private static class Analysis {
-        final List<Msg> filtered = new ArrayList<>();
-        final List<Msg> unfiltered = new ArrayList<>();
-        final List<Msg> unsafe = new ArrayList<>();
-    }
-
-    private static class MailTableModel extends AbstractTableModel {
-        private final String[] cols = {"Subject", "From", "Received", "Reasons"};
-        List<Msg> rows = new ArrayList<>();
-
-        public void set(List<Msg> list) {
-            rows = new ArrayList<>(Objects.requireNonNullElse(list, List.of()));
-            fireTableDataChanged();
-        }
-
-        @Override
-        public int getRowCount() {
-            return rows.size();
-        }
-
-        @Override
-        public int getColumnCount() {
-            return cols.length;
-        }
-
-        @Override
-        public String getColumnName(int c) {
-            return cols[c];
-        }
-
-        @Override
-        public Object getValueAt(int r, int c) {
-            Msg m = rows.get(r);
-            return switch (c) {
-                case 0 -> m.subject;
-                case 1 -> m.from;
-                case 2 -> m.received;
-                case 3 -> String.join("; ", m.reasons);
-                default -> "";
-            };
-        }
-    }
-
-    private static class CompaniesStore {
-        Set<String> allow = new TreeSet<>();
-        Set<String> block = new TreeSet<>();
-
-        static CompaniesStore loadOrCreate(Path p) throws IOException {
-            if (Files.exists(p)) {
-                try (Reader r = Files.newBufferedReader(p)) {
-                    java.lang.reflect.Type t =
-                            new com.google.gson.reflect.TypeToken<CompaniesStore>() {}.getType();
-                    CompaniesStore s = GSON.fromJson(r, t);
-                    if (s != null) return s;
-                }
-            }
-            Files.createDirectories(p.getParent());
-            CompaniesStore s = new CompaniesStore();
-            s.allow.add("csusm.edu");
-            s.save(p);
-            return s;
-        }
-
-        void save(Path p) throws IOException {
-            Files.createDirectories(p.getParent());
-            try (Writer w = Files.newBufferedWriter(p)) {
-                GSON.toJson(this, w);
-            }
-        }
-
-        boolean isAllowed(String senderDomain) {
-            if (senderDomain == null) return false;
-            String d = senderDomain.toLowerCase(Locale.ROOT);
-            for (String a : allow) if (domainMatches(d, a)) return true;
-            return false;
-        }
-
-        boolean isBlocked(String senderDomain) {
-            if (senderDomain == null) return false;
-            String d = senderDomain.toLowerCase(Locale.ROOT);
-            for (String b : block) if (domainMatches(d, b)) return true;
-            return false;
-        }
-
-        boolean isAllowedByHost(String host) {
-            host = host.toLowerCase(Locale.ROOT);
-            for (String a : allow) if (domainMatches(host, a)) return true;
-            return false;
-        }
-
-        boolean isBlockedByHost(String host) {
-            host = host.toLowerCase(Locale.ROOT);
-            for (String b : block) if (domainMatches(host, b)) return true;
-            return false;
-        }
-
-        private boolean domainMatches(String hostOrDomain, String rule) {
-            rule = rule.toLowerCase(Locale.ROOT);
-            return hostOrDomain.equals(rule) || hostOrDomain.endsWith("." + rule);
-        }
-    }
-
-    private static class LinkScanResult {
-        final boolean suspicious;
-        final List<String> reasons;
-
-        LinkScanResult(boolean s, List<String> r) {
-            suspicious = s;
-            reasons = r;
         }
     }
 }
