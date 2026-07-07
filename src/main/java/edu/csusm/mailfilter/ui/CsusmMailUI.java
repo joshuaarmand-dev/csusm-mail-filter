@@ -1,6 +1,7 @@
 package edu.csusm.mailfilter.ui;
 
 import edu.csusm.mailfilter.model.Analysis;
+import edu.csusm.mailfilter.service.LinkScanner;
 import edu.csusm.mailfilter.model.LinkScanResult;
 import edu.csusm.mailfilter.model.Msg;
 import edu.csusm.mailfilter.store.CompaniesStore;
@@ -19,10 +20,6 @@ import com.google.api.services.gmail.model.ListMessagesResponse;
 import com.google.api.services.gmail.model.Message;
 import com.google.api.services.gmail.model.MessagePart;
 import com.google.api.services.gmail.model.MessagePartHeader;
-
-import org.jsoup.Jsoup;
-import org.jsoup.nodes.Document;
-import org.jsoup.nodes.Element;
 
 import javax.swing.JButton;
 import javax.swing.JFrame;
@@ -55,9 +52,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 
-import java.net.IDN;
 import java.net.URI;
-import java.net.URLDecoder;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
@@ -71,8 +66,6 @@ import java.util.Base64;
 import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
-import java.util.Optional;
-import java.util.Set;
 
 public class CsusmMailUI extends JFrame {
 
@@ -87,17 +80,6 @@ public class CsusmMailUI extends JFrame {
 
     private static final List<String> SCOPES =
             List.of(GmailScopes.GMAIL_READONLY, GmailScopes.GMAIL_MODIFY);
-
-    private static final Set<String> REDIRECTOR_BASES = Set.of(
-            "bit.ly", "t.co", "tinyurl.com", "rb.gy", "lnkd.in", "goo.gl", "ow.ly", "buff.ly",
-            "cutt.ly", "is.gd", "mailchi.mp", "mandrillapp.com", "list-manage.com",
-            "l.facebook.com", "lm.facebook.com", "urldefense.proofpoint.com", "safelinks.protection.outlook.com"
-    );
-
-    private static final Set<String> RISKY_TLDS = Set.of(
-            "xyz", "top", "click", "work", "link", "country", "ru", "su", "cn", "tk",
-            "pw", "info", "club", "rest", "surf", "zip", "mov"
-    );
 
     private static final DateTimeFormatter WHEN =
             DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm").withZone(ZoneId.systemDefault());
@@ -126,6 +108,7 @@ public class CsusmMailUI extends JFrame {
     private final MailTableModel modelUnsafe = new MailTableModel();
 
     private CompaniesStore store;
+    private final LinkScanner linkScanner = new LinkScanner();
 
     private final JTabbedPane tabs = new JTabbedPane();
 
@@ -368,7 +351,7 @@ public class CsusmMailUI extends JFrame {
                 reasons.add("Sender in block list: " + senderDomain);
             }
 
-            LinkScanResult result = scanLinks(body, store);
+            LinkScanResult result = linkScanner.scan(body, store);
 
             if (result.suspicious) {
                 unsafe = true;
@@ -450,97 +433,6 @@ public class CsusmMailUI extends JFrame {
         return at > 0
                 ? email.substring(at + 1).toLowerCase(Locale.ROOT)
                 : "";
-    }
-
-    private static LinkScanResult scanLinks(String content, CompaniesStore store) {
-        boolean suspicious = false;
-        List<String> reasons = new ArrayList<>();
-
-        if (content == null || content.isBlank()) {
-            return new LinkScanResult(false, reasons);
-        }
-
-        Document doc = Jsoup.parse(content);
-
-        for (Element a : doc.select("a[href]")) {
-            String href = a.attr("href");
-            String actual = unwindSafeLinks(href);
-            URI uri = safeUri(actual);
-
-            if (uri == null || uri.getHost() == null) {
-                continue;
-            }
-
-            String host = uri.getHost().toLowerCase(Locale.ROOT);
-
-            if (IDN.toASCII(host).contains("xn--")) {
-                suspicious = true;
-                reasons.add("Punycode link: " + host);
-            }
-
-            if (matchesAny(host, REDIRECTOR_BASES)) {
-                suspicious = true;
-                reasons.add("Redirector: " + host);
-            }
-
-            String tld = lastLabel(host);
-
-            if (RISKY_TLDS.contains(tld)) {
-                suspicious = true;
-                reasons.add("Risky TLD: ." + tld);
-            }
-
-            if (store.isBlockedByHost(host)) {
-                suspicious = true;
-                reasons.add("Blocked link host: " + host);
-            }
-        }
-
-        return new LinkScanResult(suspicious, reasons);
-    }
-
-    private static String unwindSafeLinks(String href) {
-        try {
-            URI uri = new URI(href);
-            String query = Optional.ofNullable(uri.getRawQuery()).orElse("");
-
-            for (String part : query.split("&")) {
-                int eq = part.indexOf('=');
-
-                if (eq > 0 && part.substring(0, eq).equalsIgnoreCase("url")) {
-                    return URLDecoder.decode(part.substring(eq + 1), StandardCharsets.UTF_8);
-                }
-            }
-        } catch (Exception ignored) {
-        }
-
-        return href;
-    }
-
-    private static boolean matchesAny(String host, Set<String> bases) {
-        for (String base : bases) {
-            if (host.equals(base) || host.endsWith("." + base)) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    private static String lastLabel(String host) {
-        int dot = host.lastIndexOf('.');
-
-        return dot >= 0
-                ? host.substring(dot + 1)
-                : host;
-    }
-
-    private static URI safeUri(String value) {
-        try {
-            return URI.create(value);
-        } catch (Exception e) {
-            return null;
-        }
     }
 
     private void allowSelectedDomain() {
