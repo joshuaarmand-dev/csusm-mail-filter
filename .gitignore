@@ -1,48 +1,37 @@
-target/
-!.mvn/wrapper/maven-wrapper.jar
-!**/src/main/**/target/
-!**/src/test/**/target/
-
-### IntelliJ IDEA ###
-.idea/modules.xml
-.idea/jarRepositories.xml
-.idea/compiler.xml
-.idea/libraries/
-*.iws
+# IntelliJ IDEA
+.idea/
 *.iml
+*.iws
 *.ipr
+out/
 
-### Eclipse ###
-.apt_generated
-.classpath
-.factorypath
-.project
-.settings
-.springBeans
-.sts4-cache
+# Maven build output
+target/
 
-### NetBeans ###
-/nbproject/private/
-/nbbuild/
-/dist/
-/nbdist/
-/.nb-gradle/
-build/
-!**/src/main/**/build/
-!**/src/test/**/build/
+# Java compiled files
+*.class
+*.jar
+*.war
+*.ear
 
-### VS Code ###
-.vscode/
+# Maven wrapper files to ignore only if generated locally
+.mvn/wrapper/maven-wrapper.jar
 
-### Mac OS ###
-.DS_Store
-
-# --- Project-specific secrets / data ---
-
-# Google OAuth credentials (DO NOT COMMIT)
+# Google OAuth credentials
+credentials.json
 src/main/resources/credentials.json
 
-# Local filter data if you ever move it into the project folder
+# Local app data
+.csusm-filter/
 companies.json
+tokens/
 
-.idea/
+# macOS system files
+.DS_Store
+
+# Logs
+*.log
+
+# Environment/config files
+.env
+.env.local
