@@ -1,5 +1,7 @@
 # CSUSM Mail Filter
 
+![Java CI](https://github.com/joshuaarmand-dev/csusm-mail-filter/actions/workflows/maven.yml/badge.svg)
+
 A Java desktop application that connects to Gmail and helps users identify potentially unsafe emails through local, rule-based analysis.
 
 The app scans recent inbox messages, extracts links from email content, checks sender and link domains against user-managed allow/block lists, and organizes messages into **Filtered**, **Unfiltered**, or **Unsafe** categories.
