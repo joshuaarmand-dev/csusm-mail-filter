@@ -1,10 +1,11 @@
 package edu.csusm.mailfilter.ui;
 
 import edu.csusm.mailfilter.model.Analysis;
-import edu.csusm.mailfilter.service.LinkScanner;
-import edu.csusm.mailfilter.model.LinkScanResult;
 import edu.csusm.mailfilter.model.Msg;
+import edu.csusm.mailfilter.service.EmailAnalyzer;
+import edu.csusm.mailfilter.service.LinkScanner;
 import edu.csusm.mailfilter.store.CompaniesStore;
+import edu.csusm.mailfilter.util.EmailUtils;
 
 import com.google.api.client.extensions.java6.auth.oauth2.AuthorizationCodeInstalledApp;
 import com.google.api.client.extensions.jetty.auth.oauth2.LocalServerReceiver;
@@ -18,8 +19,6 @@ import com.google.api.services.gmail.Gmail;
 import com.google.api.services.gmail.GmailScopes;
 import com.google.api.services.gmail.model.ListMessagesResponse;
 import com.google.api.services.gmail.model.Message;
-import com.google.api.services.gmail.model.MessagePart;
-import com.google.api.services.gmail.model.MessagePartHeader;
 
 import javax.swing.JButton;
 import javax.swing.JFrame;
@@ -54,18 +53,11 @@ import java.io.InputStreamReader;
 
 import java.net.URI;
 
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 
-import java.time.Instant;
-import java.time.ZoneId;
-import java.time.format.DateTimeFormatter;
-
 import java.util.ArrayList;
-import java.util.Base64;
 import java.util.Collections;
 import java.util.List;
-import java.util.Locale;
 
 public class CsusmMailUI extends JFrame {
 
@@ -80,9 +72,6 @@ public class CsusmMailUI extends JFrame {
 
     private static final List<String> SCOPES =
             List.of(GmailScopes.GMAIL_READONLY, GmailScopes.GMAIL_MODIFY);
-
-    private static final DateTimeFormatter WHEN =
-            DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm").withZone(ZoneId.systemDefault());
 
     private Gmail gmail;
     private final Object gmailLock = new Object();
@@ -108,7 +97,8 @@ public class CsusmMailUI extends JFrame {
     private final MailTableModel modelUnsafe = new MailTableModel();
 
     private CompaniesStore store;
-    private final LinkScanner linkScanner = new LinkScanner();
+
+    private final EmailAnalyzer emailAnalyzer = new EmailAnalyzer(new LinkScanner());
 
     private final JTabbedPane tabs = new JTabbedPane();
 
@@ -226,7 +216,7 @@ public class CsusmMailUI extends JFrame {
 
                 statusBG("Scanning for domains and link safety…");
 
-                return analyzeMessages(msgs, store);
+                return emailAnalyzer.analyzeMessages(msgs, store);
             }
 
             @Override
@@ -297,144 +287,6 @@ public class CsusmMailUI extends JFrame {
         }
     }
 
-    private Analysis analyzeMessages(List<Message> msgs, CompaniesStore store) {
-        Analysis out = new Analysis();
-
-        for (Message m : msgs) {
-            String id = m.getId();
-            String subj = "(no subject)";
-            String fromHeader = "";
-            String whenTxt = "";
-
-            try {
-                List<MessagePartHeader> headers =
-                        (m.getPayload() != null && m.getPayload().getHeaders() != null)
-                                ? m.getPayload().getHeaders()
-                                : List.of();
-
-                for (MessagePartHeader h : headers) {
-                    String name = (h.getName() == null ? "" : h.getName())
-                            .toLowerCase(Locale.ROOT);
-
-                    switch (name) {
-                        case "subject" -> subj = h.getValue();
-                        case "from" -> fromHeader = h.getValue();
-                        default -> {
-                        }
-                    }
-                }
-
-                Long internalDate = m.getInternalDate();
-
-                if (internalDate != null) {
-                    whenTxt = WHEN.format(Instant.ofEpochMilli(internalDate));
-                }
-            } catch (Exception ignored) {
-            }
-
-            String email = extractEmail(fromHeader);
-            String body = extractBody(m);
-            String link = "https://mail.google.com/mail/u/0/#inbox/" + id;
-
-            Msg row = new Msg(id, subj, email, whenTxt, link);
-
-            boolean fromSchool = isCsusm(email);
-            String senderDomain = senderDomain(email);
-            boolean fromAllowed = store.isAllowed(senderDomain);
-            boolean fromBlocked = store.isBlocked(senderDomain);
-
-            boolean unsafe = false;
-            List<String> reasons = new ArrayList<>();
-
-            if (fromBlocked) {
-                unsafe = true;
-                reasons.add("Sender in block list: " + senderDomain);
-            }
-
-            LinkScanResult result = linkScanner.scan(body, store);
-
-            if (result.suspicious) {
-                unsafe = true;
-                reasons.addAll(result.reasons);
-            }
-
-            row.classFiltered = fromSchool || fromAllowed;
-            row.classUnsafe = unsafe;
-            row.reasons = reasons;
-
-            if (row.classFiltered) {
-                out.filtered.add(row);
-            } else {
-                out.unfiltered.add(row);
-            }
-
-            if (row.classUnsafe) {
-                out.unsafe.add(row);
-            }
-        }
-
-        return out;
-    }
-
-    private static String extractBody(Message msg) {
-        if (msg.getPayload() == null) {
-            return "";
-        }
-
-        return extractBodyFromPart(msg.getPayload());
-    }
-
-    private static String extractBodyFromPart(MessagePart part) {
-        if (part.getBody() != null && part.getBody().getData() != null) {
-            byte[] data = Base64.getUrlDecoder().decode(part.getBody().getData());
-            return new String(data, StandardCharsets.UTF_8);
-        }
-
-        if (part.getParts() != null) {
-            for (MessagePart p : part.getParts()) {
-                String text = extractBodyFromPart(p);
-
-                if (!text.isEmpty()) {
-                    return text;
-                }
-            }
-        }
-
-        return "";
-    }
-
-    private static String extractEmail(String fromHeader) {
-        if (fromHeader == null) {
-            return "";
-        }
-
-        int lt = fromHeader.indexOf('<');
-        int gt = fromHeader.indexOf('>');
-
-        String candidate = (lt >= 0 && gt > lt)
-                ? fromHeader.substring(lt + 1, gt)
-                : fromHeader;
-
-        return candidate.trim();
-    }
-
-    private static boolean isCsusm(String email) {
-        return email != null && email.toLowerCase(Locale.ROOT)
-                .matches("^[^@]+@(?:[a-z0-9-]+\\.)*csusm\\.edu$");
-    }
-
-    private static String senderDomain(String email) {
-        if (email == null) {
-            return "";
-        }
-
-        int at = email.indexOf('@');
-
-        return at > 0
-                ? email.substring(at + 1).toLowerCase(Locale.ROOT)
-                : "";
-    }
-
     private void allowSelectedDomain() {
         Msg msg = anySelected();
 
@@ -442,7 +294,7 @@ public class CsusmMailUI extends JFrame {
             return;
         }
 
-        String domain = senderDomain(msg.from);
+        String domain = EmailUtils.senderDomain(msg.from);
 
         if (domain.isBlank()) {
             info("No sender domain found.");
@@ -463,7 +315,7 @@ public class CsusmMailUI extends JFrame {
             return;
         }
 
-        String domain = senderDomain(msg.from);
+        String domain = EmailUtils.senderDomain(msg.from);
 
         if (domain.isBlank()) {
             info("No sender domain found.");
@@ -484,7 +336,7 @@ public class CsusmMailUI extends JFrame {
             return;
         }
 
-        String domain = senderDomain(msg.from);
+        String domain = EmailUtils.senderDomain(msg.from);
 
         boolean changed = "allow".equals(list)
                 ? store.removeAllowed(domain)
