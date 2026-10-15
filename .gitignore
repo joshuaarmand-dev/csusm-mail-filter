@@ -8,6 +8,11 @@ out/
 # Maven build output
 target/
 
+# Packaged app output
+dist/
+*.app/
+*.dmg
+
 # Java compiled files
 *.class
 *.jar

@@ -10,8 +10,13 @@ public class Msg {
     public final String webLink;
 
     public List<String> reasons = List.of();
-    public boolean classFiltered;
-    public boolean classUnsafe;
+    public Category category = Category.NORMAL;
+
+    /** Sender authentication result, e.g. "DMARC pass (csusm.edu)". */
+    public String auth = "";
+
+    /** Web links found in the message, as checked by LinkScanner. */
+    public List<String> links = List.of();
 
     public Msg(String id, String subject, String from, String received, String webLink) {
         this.id = id;
