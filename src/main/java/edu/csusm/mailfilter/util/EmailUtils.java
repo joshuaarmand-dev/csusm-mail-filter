@@ -31,7 +31,8 @@ public class EmailUtils {
             return "";
         }
 
-        int at = email.indexOf('@');
+        // The domain is after the last @. A quoted local part may contain "@".
+        int at = email.lastIndexOf('@');
 
         return at > 0
                 ? email.substring(at + 1).toLowerCase(Locale.ROOT)

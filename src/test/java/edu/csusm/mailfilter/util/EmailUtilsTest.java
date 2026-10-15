@@ -63,4 +63,10 @@ class EmailUtilsTest {
     void isCsusmReturnsFalseForFakeCsusmLookalikeDomain() {
         assertFalse(EmailUtils.isCsusm("person@csusm.edu.fake.com"));
     }
+
+    @Test
+    void senderDomainUsesTextAfterLastAtSymbol() {
+        String result = EmailUtils.senderDomain("\"csusm.edu@\"@evil.example");
+        assertEquals("evil.example", result);
+    }
 }

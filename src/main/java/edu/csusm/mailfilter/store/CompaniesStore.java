@@ -2,6 +2,7 @@ package edu.csusm.mailfilter.store;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import com.google.gson.JsonParseException;
 import com.google.gson.reflect.TypeToken;
 
 import java.io.IOException;
@@ -30,8 +31,19 @@ public class CompaniesStore {
                 CompaniesStore store = GSON.fromJson(reader, type);
 
                 if (store != null) {
+                    // A hand-edited file may contain "allow": null. Gson also
+                    // loads sets as LinkedHashSet, so copy into TreeSets to keep
+                    // the saved file sorted.
+                    store.allow = (store.allow == null) ? new TreeSet<>() : new TreeSet<>(store.allow);
+                    store.block = (store.block == null) ? new TreeSet<>() : new TreeSet<>(store.block);
+
                     return store;
                 }
+            } catch (JsonParseException e) {
+                // Gson throws an unchecked exception on bad JSON, which would
+                // otherwise crash the app on startup. Report it as an I/O problem
+                // and leave the file untouched so the user's lists can be recovered.
+                throw new IOException(path + " is not valid JSON: " + e.getMessage(), e);
             }
         }
 
